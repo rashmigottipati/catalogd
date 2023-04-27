@@ -31,10 +31,8 @@ const (
 	TypeReady = "Ready"
 
 	ReasonContentsAvailable    = "ContentsAvailable"
-	ReasonJobUnpackError       = "JobUnpackError"
+	ReasonUnpackError          = "UnpackError"
 	ReasonParseUnpackLogsError = "ParseUnpackLogsError"
-	ReasonBuildPackagesError   = "BuildPackagesError"
-	ReasonBuildMetadataError   = "BuildMetadataError"
 )
 
 // +genclient

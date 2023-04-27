@@ -111,13 +111,13 @@ func (r *CatalogSourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 func (r *CatalogSourceReconciler) reconcile(ctx context.Context, catalogSource *corev1beta1.CatalogSource) (ctrl.Result, error) {
 	job, err := r.ensureUnpackJob(ctx, catalogSource)
 	if err != nil {
-		updateStatusError(catalogSource, err)
+		updateStatusUnpackError(catalogSource, err)
 		return ctrl.Result{}, fmt.Errorf("ensuring unpack job: %v", err)
 	}
 
 	complete, err := r.checkUnpackJobComplete(ctx, job)
 	if err != nil {
-		updateStatusError(catalogSource, err)
+		updateStatusUnpackError(catalogSource, err)
 		return ctrl.Result{}, fmt.Errorf("ensuring unpack job completed: %v", err)
 	}
 	if !complete {
@@ -135,7 +135,7 @@ func (r *CatalogSourceReconciler) reconcile(ctx context.Context, catalogSource *
 		if corev1beta1.IsUnpackPhaseError(err) {
 			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
-		updateParseLogsError(catalogSource, err)
+		updateStatusUnpackError(catalogSource, err)
 		if err := r.Client.Status().Update(ctx, catalogSource); err != nil {
 			return ctrl.Result{}, fmt.Errorf("updating catalogsource status: %v", err)
 		}
@@ -143,12 +143,12 @@ func (r *CatalogSourceReconciler) reconcile(ctx context.Context, catalogSource *
 	}
 
 	if err := r.createPackages(ctx, declCfg, catalogSource); err != nil {
-		updateStatusError(catalogSource, err)
+		updateStatusUnpackError(catalogSource, err)
 		return ctrl.Result{}, err
 	}
 
 	if err := r.createBundleMetadata(ctx, declCfg, catalogSource); err != nil {
-		updateStatusError(catalogSource, err)
+		updateStatusUnpackError(catalogSource, err)
 		return ctrl.Result{}, err
 	}
 
@@ -213,43 +213,16 @@ func updateStatusReady(catalogSource *corev1beta1.CatalogSource) {
 	})
 }
 
-// updateStatusError will update the CatalogSource.Status.Conditions
+// updateStatusUnpackError will update the CatalogSource.Status.Conditions
 // to have the condition Type "Ready" with a Status of "False" and a Reason
 // of "UnpackError". This function is used to signal that a CatalogSource
 // is in an error state and that catalog contents are not available on cluster
-func updateStatusError(catalogSource *corev1beta1.CatalogSource, err error) {
+func updateStatusUnpackError(catalogSource *corev1beta1.CatalogSource, err error) {
 	meta.SetStatusCondition(&catalogSource.Status.Conditions, metav1.Condition{
 		Type:    corev1beta1.TypeReady,
 		Status:  metav1.ConditionFalse,
-		Reason:  corev1beta1.ReasonJobUnpackError,
+		Reason:  corev1beta1.ReasonUnpackError,
 		Message: "catalog contents have not been unpacked correctly and so are unavailable on the cluster",
-	})
-}
-
-func updateParseLogsError(catalogSource *corev1beta1.CatalogSource, err error) {
-	meta.SetStatusCondition(&catalogSource.Status.Conditions, metav1.Condition{
-		Type:    corev1beta1.TypeReady,
-		Status:  metav1.ConditionFalse,
-		Reason:  corev1beta1.ReasonParseUnpackLogsError,
-		Message: "catalog contents could not be read and transformed into a File-Based Catalog format and so are unavailable on the cluster",
-	})
-}
-
-func updateBuildPackagesError(catalogSource *corev1beta1.CatalogSource, err error) {
-	meta.SetStatusCondition(&catalogSource.Status.Conditions, metav1.Condition{
-		Type:    corev1beta1.TypeReady,
-		Status:  metav1.ConditionFalse,
-		Reason:  corev1beta1.ReasonBuildPackagesError,
-		Message: "unable to create Package CRs from catalog contents",
-	})
-}
-
-func updateBuildMetadataError(catalogSource *corev1beta1.CatalogSource, err error) {
-	meta.SetStatusCondition(&catalogSource.Status.Conditions, metav1.Condition{
-		Type:    corev1beta1.TypeReady,
-		Status:  metav1.ConditionFalse,
-		Reason:  corev1beta1.ReasonBuildMetadataError,
-		Message: "unable to create BundleMetadata CRs from catalog contents",
 	})
 }
 
@@ -294,8 +267,8 @@ func (r *CatalogSourceReconciler) createBundleMetadata(ctx context.Context, decl
 
 		if err := r.Client.Create(ctx, &bundleMeta); err != nil {
 			// If BundleMetadata CR already exists, continue
-			if errors.IsNotFound(err) {
-				return nil
+			if !errors.IsAlreadyExists(err) {
+				return err
 			}
 			return fmt.Errorf("creating bundlemetadata %q: %w", bundleMeta.Name, err)
 		}
@@ -349,8 +322,8 @@ func (r *CatalogSourceReconciler) createPackages(ctx context.Context, declCfg *d
 
 		if err := r.Client.Create(ctx, &pack); err != nil {
 			// If Create fails due to Package CR already being present, continue
-			if errors.IsNotFound(err) {
-				return nil
+			if !errors.IsAlreadyExists(err) {
+				return err
 			}
 			return fmt.Errorf("creating package %q: %w", pack.Name, err)
 		}
