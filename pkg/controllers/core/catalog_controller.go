@@ -32,7 +32,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	ctrlutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 
@@ -131,7 +130,6 @@ func (r *CatalogReconciler) reconcile(ctx context.Context, catalog *v1alpha1.Cat
 		//   as the already unpacked content. If it does, we should skip this rest
 		//   of the unpacking steps.
 
-		// (todo): walkmetaFS function
 		// fbc, err := declcfg.LoadFS(unpackResult.FS)
 		// if err != nil {
 		// 	return ctrl.Result{}, updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("load FBC from filesystem: %v", err))
@@ -375,9 +373,11 @@ func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fs fs.FS, c
 			return fmt.Errorf("unable to parse catalog content in the path: %w", err)
 		}
 
-		// (todo): look into doing a deepcopy, as this will get overridden
-		// (add labels): filter catalogmetadata based on the labels; @joe's prototype
 		catalogMetadata := &catalogv1beta1.CatalogMetadata{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: corev1beta1.GroupVersion.String(),
+				Kind:       "CatalogMetadata",
+			},
 			ObjectMeta: metav1.ObjectMeta{
 				Name: meta.Name,
 				Labels: map[string]string{
@@ -387,6 +387,14 @@ func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fs fs.FS, c
 					"catalogd.operatorframework.io/name":          meta.Name,
 					"catalogd.operatorframework.io/packageOrName": meta.Name,
 				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion:         corev1beta1.GroupVersion.String(),
+					Kind:               "Catalog",
+					Name:               catalog.Name,
+					UID:                catalog.UID,
+					BlockOwnerDeletion: pointer.Bool(true),
+					Controller:         pointer.Bool(true),
+				}},
 			},
 			Spec: catalogv1beta1.CatalogMetadataSpec{
 				Catalog: corev1.LocalObjectReference{Name: catalog.Name},
@@ -397,13 +405,8 @@ func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fs fs.FS, c
 			},
 		}
 
-		if err := ctrlutil.SetOwnerReference(catalog, catalogMetadata, r.Client.Scheme()); err != nil {
-			return fmt.Errorf("setting ownerreference on CatalogMetadata %q: %w", catalogMetadata.Name, err)
-		}
-
-		// create a new map entry with catalog metadata name as the key and value to be the actual catalogMetadata
-		// populate the map with the existing entry
 		newCatalogMetadataObjs[catalogMetadata.Name] = catalogMetadata
+
 		return nil
 	})
 	if err != nil {
