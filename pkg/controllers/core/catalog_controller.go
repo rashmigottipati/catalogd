@@ -37,7 +37,6 @@ import (
 
 	"github.com/operator-framework/catalogd/api/core/v1alpha1"
 	"github.com/operator-framework/catalogd/internal/source"
-	corev1beta1 "github.com/operator-framework/catalogd/pkg/apis/core/v1beta1"
 )
 
 // TODO (everettraven): Add unit tests for the CatalogReconciler
@@ -371,8 +370,8 @@ func (r *CatalogReconciler) syncPackages(ctx context.Context, declCfg *declcfg.D
 // syncCatalogMetadata will create a `CatalogMetadata` resource for each
 // "olm.bundle" and "olm.package" objects that exist for the given catalog contents. Returns an
 // error if any are encountered.
-func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fs fs.FS, catalog *corev1beta1.Catalog) error {
-	newCatalogMetadataObjs := map[string]*corev1beta1.CatalogMetadata{}
+func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fs fs.FS, catalog *v1alpha1.Catalog) error {
+	newCatalogMetadataObjs := map[string]*v1alpha1.CatalogMetadata{}
 
 	err := declcfg.WalkMetasFS(fs, func(path string, meta *declcfg.Meta, err error) error {
 		if err != nil {
@@ -392,9 +391,9 @@ func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fs fs.FS, c
 			objName = fmt.Sprintf("%s-%s", objName, meta.Name)
 		}
 
-		catalogMetadata := &corev1beta1.CatalogMetadata{
+		catalogMetadata := &v1alpha1.CatalogMetadata{
 			TypeMeta: metav1.TypeMeta{
-				APIVersion: corev1beta1.GroupVersion.String(),
+				APIVersion: v1alpha1.GroupVersion.String(),
 				Kind:       "CatalogMetadata",
 			},
 			ObjectMeta: metav1.ObjectMeta{
@@ -407,7 +406,7 @@ func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fs fs.FS, c
 					"catalogd.operatorframework.io/packageOrName": packageOrName,
 				},
 				OwnerReferences: []metav1.OwnerReference{{
-					APIVersion:         corev1beta1.GroupVersion.String(),
+					APIVersion:         v1alpha1.GroupVersion.String(),
 					Kind:               "Catalog",
 					Name:               catalog.Name,
 					UID:                catalog.UID,
@@ -415,7 +414,7 @@ func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fs fs.FS, c
 					Controller:         pointer.Bool(true),
 				}},
 			},
-			Spec: corev1beta1.CatalogMetadataSpec{
+			Spec: v1alpha1.CatalogMetadataSpec{
 				Catalog: corev1.LocalObjectReference{Name: catalog.Name},
 				Name:    meta.Name,
 				Schema:  meta.Schema,
@@ -433,7 +432,7 @@ func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fs fs.FS, c
 		return fmt.Errorf("unable to parse declarative config into CatalogMetadata API: %w", err)
 	}
 
-	var existingCatalogMetadataObjs corev1beta1.CatalogMetadataList
+	var existingCatalogMetadataObjs v1alpha1.CatalogMetadataList
 	if err := r.List(ctx, &existingCatalogMetadataObjs); err != nil {
 		return fmt.Errorf("list existing catalog metadata: %v", err)
 	}
