@@ -19,6 +19,7 @@ import (
 	"github.com/operator-framework/catalogd/api/core/v1alpha1"
 	"github.com/operator-framework/catalogd/internal/source"
 	"github.com/operator-framework/catalogd/pkg/controllers/core"
+	"github.com/operator-framework/catalogd/pkg/processor"
 )
 
 var _ source.Unpacker = &MockSource{}
@@ -51,13 +52,13 @@ var _ = Describe("Catalogd Controller Test", func() {
 		mockSource = &MockSource{}
 		reconciler = &core.CatalogReconciler{
 			Client: cl,
-			CatalogProcessor: &core.CatalogProcessor{
+			CatalogProcessor: &processor.CatalogProcessor{
 				Unpacker: source.NewUnpacker(
 					map[v1alpha1.SourceType]source.Unpacker{
 						v1alpha1.SourceTypeImage: mockSource,
 					},
 				),
-				Writer: &core.KubeWriter{
+				Writer: &processor.KubeWriter{
 					Client: cl,
 				},
 			},
