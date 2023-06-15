@@ -34,6 +34,7 @@ import (
 
 	"github.com/operator-framework/catalogd/internal/source"
 	"github.com/operator-framework/catalogd/internal/version"
+	"github.com/operator-framework/catalogd/pkg/controllers/core"
 	corecontrollers "github.com/operator-framework/catalogd/pkg/controllers/core"
 	"github.com/operator-framework/catalogd/pkg/features"
 	"github.com/operator-framework/catalogd/pkg/profile"
@@ -112,8 +113,11 @@ func main() {
 	}
 
 	if err = (&corecontrollers.CatalogReconciler{
-		Client:   mgr.GetClient(),
-		Unpacker: unpacker,
+		Client: mgr.GetClient(),
+		CatalogProcessor: &core.CatalogProcessor{
+			Unpacker: unpacker,
+			Writer:   &core.KubeWriter{Client: mgr.GetClient()},
+		},
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Catalog")
 		os.Exit(1)

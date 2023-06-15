@@ -51,11 +51,16 @@ var _ = Describe("Catalogd Controller Test", func() {
 		mockSource = &MockSource{}
 		reconciler = &core.CatalogReconciler{
 			Client: cl,
-			Unpacker: source.NewUnpacker(
-				map[v1alpha1.SourceType]source.Unpacker{
-					v1alpha1.SourceTypeImage: mockSource,
+			CatalogProcessor: &core.CatalogProcessor{
+				Unpacker: source.NewUnpacker(
+					map[v1alpha1.SourceType]source.Unpacker{
+						v1alpha1.SourceTypeImage: mockSource,
+					},
+				),
+				Writer: &core.KubeWriter{
+					Client: cl,
 				},
-			),
+			},
 		}
 	})
 

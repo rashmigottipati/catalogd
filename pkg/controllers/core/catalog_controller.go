@@ -19,7 +19,6 @@ package core
 import (
 	"context"
 	"fmt"
-	"hash/fnv"
 	"io/fs"
 
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
@@ -45,7 +44,8 @@ import (
 // CatalogReconciler reconciles a Catalog object
 type CatalogReconciler struct {
 	client.Client
-	Unpacker source.Unpacker
+	// Unpacker source.Unpacker
+	CatalogProcessor *CatalogProcessor
 }
 
 //+kubebuilder:rbac:groups=catalogd.operatorframework.io,resources=catalogs,verbs=get;list;watch;create;update;patch;delete
@@ -113,47 +113,60 @@ func (r *CatalogReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-func (r *CatalogReconciler) reconcile(ctx context.Context, catalog *v1alpha1.Catalog) (ctrl.Result, error) {
-	unpackResult, err := r.Unpacker.Unpack(ctx, catalog)
+func (c *CatalogProcessor) Process(ctx context.Context, catalog *v1alpha1.Catalog) error {
+	unpackResult, err := c.Unpacker.Unpack(ctx, catalog)
 	if err != nil {
-		return ctrl.Result{}, updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("source bundle content: %v", err))
+		return updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("source bundle content: %v", err))
 	}
 
 	switch unpackResult.State {
 	case source.StatePending:
 		updateStatusUnpackPending(&catalog.Status, unpackResult)
-		return ctrl.Result{}, nil
+		return nil
 	case source.StateUnpacking:
 		updateStatusUnpacking(&catalog.Status, unpackResult)
-		return ctrl.Result{}, nil
+		return nil
 	case source.StateUnpacked:
 		// TODO: We should check to see if the unpacked result has the same content
 		//   as the already unpacked content. If it does, we should skip this rest
 		//   of the unpacking steps.
 
-		fbc, err := declcfg.LoadFS(unpackResult.FS)
+		err := c.Writer.Write(ctx, unpackResult.FS, catalog)
 		if err != nil {
-			return ctrl.Result{}, updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("load FBC from filesystem: %v", err))
-		}
-
-		if err := r.syncPackages(ctx, fbc, catalog); err != nil {
-			return ctrl.Result{}, updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("create package objects: %v", err))
-		}
-
-		if err := r.syncBundleMetadata(ctx, fbc, catalog); err != nil {
-			return ctrl.Result{}, updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("create bundle metadata objects: %v", err))
-		}
-
-		if err = r.syncCatalogMetadata(ctx, unpackResult.FS, catalog); err != nil {
-			return ctrl.Result{}, updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("create catalog metadata objects: %v", err))
+			return updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("write catalog metadata to kube APIs: %v", err))
 		}
 
 		updateStatusUnpacked(&catalog.Status, unpackResult)
-		return ctrl.Result{}, nil
+		return nil
 	default:
-		return ctrl.Result{}, updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("unknown unpack state %q: %v", unpackResult.State, err))
+		return updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("unknown unpack state %q: %v", unpackResult.State, err))
+	}
+}
+
+func (r *CatalogReconciler) reconcile(ctx context.Context, catalog *v1alpha1.Catalog) (ctrl.Result, error) {
+	err := r.CatalogProcessor.Process(ctx, catalog)
+	return ctrl.Result{}, err
+}
+
+func (k *KubeWriter) Write(ctx context.Context, fsys fs.FS, catalog *v1alpha1.Catalog) error {
+	fbc, err := declcfg.LoadFS(fsys)
+	if err != nil {
+		return updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("load FBC from filesystem: %v", err))
 	}
 
+	if err := k.syncPackages(ctx, fbc, catalog); err != nil {
+		return updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("create package objects: %v", err))
+	}
+
+	if err := k.syncBundleMetadata(ctx, fbc, catalog); err != nil {
+		return updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("create bundle metadata objects: %v", err))
+	}
+
+	if err = k.syncCatalogMetadata(ctx, fsys, catalog); err != nil {
+		return updateStatusUnpackFailing(&catalog.Status, fmt.Errorf("create catalog metadata objects: %v", err))
+	}
+
+	return nil
 }
 
 func updateStatusUnpackPending(status *v1alpha1.CatalogStatus, result *source.Result) {
@@ -204,7 +217,7 @@ func updateStatusUnpackFailing(status *v1alpha1.CatalogStatus, err error) error 
 // syncBundleMetadata will create a `BundleMetadata` resource for each
 // "olm.bundle" object that exists for the given catalog contents. Returns an
 // error if any are encountered.
-func (r *CatalogReconciler) syncBundleMetadata(ctx context.Context, declCfg *declcfg.DeclarativeConfig, catalog *v1alpha1.Catalog) error {
+func (k *KubeWriter) syncBundleMetadata(ctx context.Context, declCfg *declcfg.DeclarativeConfig, catalog *v1alpha1.Catalog) error {
 	newBundles := map[string]*v1alpha1.BundleMetadata{}
 
 	for _, bundle := range declCfg.Bundles {
@@ -258,12 +271,12 @@ func (r *CatalogReconciler) syncBundleMetadata(ctx context.Context, declCfg *dec
 	}
 
 	var existingBundles v1alpha1.BundleMetadataList
-	if err := r.List(ctx, &existingBundles); err != nil {
+	if err := k.List(ctx, &existingBundles); err != nil {
 		return fmt.Errorf("list existing bundle metadatas: %v", err)
 	}
 	for _, existingBundle := range existingBundles.Items {
 		if _, ok := newBundles[existingBundle.Name]; !ok {
-			if err := r.Delete(ctx, &existingBundle); err != nil {
+			if err := k.Delete(ctx, &existingBundle); err != nil {
 				return fmt.Errorf("delete existing bundle metadata %q: %v", existingBundle.Name, err)
 			}
 		}
@@ -272,7 +285,7 @@ func (r *CatalogReconciler) syncBundleMetadata(ctx context.Context, declCfg *dec
 	ordered := sets.List(sets.KeySet(newBundles))
 	for _, bundleName := range ordered {
 		newBundle := newBundles[bundleName]
-		if err := r.Client.Patch(ctx, newBundle, client.Apply, &client.PatchOptions{Force: pointer.Bool(true), FieldManager: "catalog-controller"}); err != nil {
+		if err := k.Client.Patch(ctx, newBundle, client.Apply, &client.PatchOptions{Force: pointer.Bool(true), FieldManager: "catalog-controller"}); err != nil {
 			return fmt.Errorf("applying bundle metadata %q: %w", newBundle.Name, err)
 		}
 	}
@@ -283,7 +296,7 @@ func (r *CatalogReconciler) syncBundleMetadata(ctx context.Context, declCfg *dec
 // "olm.package" object that exists for the given catalog contents.
 // `Package.Spec.Channels` is populated by filtering all "olm.channel" objects
 // where the "packageName" == `Package.Name`. Returns an error if any are encountered.
-func (r *CatalogReconciler) syncPackages(ctx context.Context, declCfg *declcfg.DeclarativeConfig, catalog *v1alpha1.Catalog) error {
+func (k *KubeWriter) syncPackages(ctx context.Context, declCfg *declcfg.DeclarativeConfig, catalog *v1alpha1.Catalog) error {
 	newPkgs := map[string]*v1alpha1.Package{}
 
 	for _, pkg := range declCfg.Packages {
@@ -344,13 +357,13 @@ func (r *CatalogReconciler) syncPackages(ctx context.Context, declCfg *declcfg.D
 	}
 
 	var existingPkgs v1alpha1.PackageList
-	if err := r.List(ctx, &existingPkgs); err != nil {
+	if err := k.List(ctx, &existingPkgs); err != nil {
 		return fmt.Errorf("list existing packages: %v", err)
 	}
 	for _, existingPkg := range existingPkgs.Items {
 		if _, ok := newPkgs[existingPkg.Name]; !ok {
 			// delete existing package
-			if err := r.Delete(ctx, &existingPkg); err != nil {
+			if err := k.Delete(ctx, &existingPkg); err != nil {
 				return fmt.Errorf("delete existing package %q: %v", existingPkg.Name, err)
 			}
 		}
@@ -359,7 +372,7 @@ func (r *CatalogReconciler) syncPackages(ctx context.Context, declCfg *declcfg.D
 	ordered := sets.List(sets.KeySet(newPkgs))
 	for _, pkgName := range ordered {
 		newPkg := newPkgs[pkgName]
-		if err := r.Client.Patch(ctx, newPkg, client.Apply, &client.PatchOptions{Force: pointer.Bool(true), FieldManager: "catalog-controller"}); err != nil {
+		if err := k.Client.Patch(ctx, newPkg, client.Apply, &client.PatchOptions{Force: pointer.Bool(true), FieldManager: "catalog-controller"}); err != nil {
 			return fmt.Errorf("applying package %q: %w", newPkg.Name, err)
 		}
 	}
@@ -369,7 +382,8 @@ func (r *CatalogReconciler) syncPackages(ctx context.Context, declCfg *declcfg.D
 // syncCatalogMetadata will sync all of the catalog contents to `CatalogMetadata` objects
 // by creating, updating and deleting the objects as necessary. Returns an
 // error if any are encountered.
-func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fsys fs.FS, catalog *v1alpha1.Catalog) error {
+
+func (k *KubeWriter) syncCatalogMetadata(ctx context.Context, fsys fs.FS, catalog *v1alpha1.Catalog) error {
 	newCatalogMetadataObjs := map[string]*v1alpha1.CatalogMetadata{}
 
 	err := declcfg.WalkMetasFS(fsys, func(path string, meta *declcfg.Meta, err error) error {
@@ -425,13 +439,13 @@ func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fsys fs.FS,
 	}
 
 	var existingCatalogMetadataObjs v1alpha1.CatalogMetadataList
-	if err := r.List(ctx, &existingCatalogMetadataObjs); err != nil {
+	if err := k.List(ctx, &existingCatalogMetadataObjs); err != nil {
 		return fmt.Errorf("list existing catalog metadata: %v", err)
 	}
 	for _, existingCatalogMetadata := range existingCatalogMetadataObjs.Items {
 		if _, ok := newCatalogMetadataObjs[existingCatalogMetadata.Name]; !ok {
 			// delete existing catalog metadata
-			if err := r.Delete(ctx, &existingCatalogMetadata); err != nil {
+			if err := k.Delete(ctx, &existingCatalogMetadata); err != nil {
 				return fmt.Errorf("delete existing catalog metadata %q: %v", existingCatalogMetadata.Name, err)
 			}
 		}
@@ -440,7 +454,7 @@ func (r *CatalogReconciler) syncCatalogMetadata(ctx context.Context, fsys fs.FS,
 	ordered := sets.List(sets.KeySet(newCatalogMetadataObjs))
 	for _, catalogMetadataName := range ordered {
 		newcatalogMetadata := newCatalogMetadataObjs[catalogMetadataName]
-		if err := r.Client.Patch(ctx, newcatalogMetadata, client.Apply, &client.PatchOptions{Force: pointer.Bool(true), FieldManager: "catalog-controller"}); err != nil {
+		if err := k.Client.Patch(ctx, newcatalogMetadata, client.Apply, &client.PatchOptions{Force: pointer.Bool(true), FieldManager: "catalog-controller"}); err != nil {
 			return fmt.Errorf("applying catalog metadata %q: %w", newcatalogMetadata.Name, err)
 		}
 	}
@@ -455,10 +469,6 @@ func generateCatalogMetadataName(ctx context.Context, catalogName string, meta *
 	}
 	if meta.Name != "" {
 		objName = fmt.Sprintf("%s-%s", objName, meta.Name)
-	} else {
-		hasher := fnv.New32a()
-		// compute hash of meta.Blob that we can use in the place of the empty meta.Name
-		objName = fmt.Sprintf("%s-%s", objName, hasher)
 	}
 	return objName
 }
