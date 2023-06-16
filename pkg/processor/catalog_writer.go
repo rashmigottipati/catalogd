@@ -22,7 +22,7 @@ import (
 	"io/fs"
 
 	"github.com/operator-framework/catalogd/api/core/v1alpha1"
-	"github.com/operator-framework/catalogd/internal/source"
+	"github.com/operator-framework/catalogd/pkg/source"
 	"github.com/operator-framework/operator-registry/alpha/declcfg"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
